@@ -10,6 +10,14 @@
 #include <vector>
 #include <stack>
 #include <unordered_map>
+#include <sstream>
+#include <stdexcept>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h> // нужно для SetConsoleCP / SetConsoleOutputCP (кириллица в консоли)
+#endif
+
 using namespace std;
 
 set<variant<int, string>> Intersection(
@@ -59,6 +67,12 @@ void applyOperation(
 int main()
 {
 	setlocale(LC_ALL, "ru");
+#ifdef _WIN32
+	// Без этого консоль читает русские буквы в кодировке 866, а выводит в 1251,
+	// из-за чего буквы в строковых элементах подменяются или пропадают
+	SetConsoleCP(1251);
+	SetConsoleOutputCP(1251);
+#endif
 	map <int, set<variant<int, string>>> sets;
 	int count = 1;
 	while (true)
@@ -68,7 +82,24 @@ int main()
 		set<variant<int, string>>set;
 		enterSet(set, sets, count);
 			cout << "Хотите ввести еще одно множество?\n1.Да\n2.Нет\nПри вводе иных вариантов вы автоматически закончите ввод множеств\n";
-			cin >> choice;
+			// Читаем ответ целой строкой, чтобы лишние символы не попадали в следующий ввод
+			string answer;
+			if (!getline(cin, answer))
+			{
+				break;
+			}
+			string trimmedAnswer;
+			for (char symbol : answer)
+			{
+				if (symbol != ' ' && symbol != '\t' && symbol != '\r')
+				{
+					trimmedAnswer += symbol;
+				}
+			}
+			if (trimmedAnswer == "1")
+			{
+				choice = 1;
+			}
 			if (choice == 1) {}
 			else {
 				break;
@@ -83,8 +114,11 @@ int main()
 		cout << "Введите выражение с множествами в строку, используя для обозначения множеств вышепоказанные числа и обозначения операций.\n";
 		cout << "Пример выражения: (1+2)*3-4^(!5+6)"<<endl;
 		// Читаем всю строку целиком, чтобы выражение можно было вводить с пробелами
-		if (cin.peek() == '\n') cin.ignore();
-		getline(cin, expression);
+		if (!getline(cin, expression))
+		{
+			cout << "\nВвод завершён, выражение не введено.\n";
+			return 0;
+		}
 		string withoutSpaces;
 		for (char symbol : expression)
 		{
@@ -244,47 +278,104 @@ void enterSet(
 	cout << "\nВводите элементы множества через пробел." << endl;
 	cout << "Для завершения ввода введите end:" << endl;
 
-	string input;
+	// Читаем построчно: так всё, что введено в одной строке с end,
+	// не "утекает" в следующий вопрос программы
+	string line;
+	bool finished = false;
 
-	while (cin >> input)
+	while (!finished && getline(cin, line))
 	{
-		if (input == "end")
-		{
-			break;
-		}
-		bool isNumber = true;
-		int start = 0;
-		if (input[0] == '-')
-		{
-			start = 1;
-		}
+		istringstream lineStream(line);
+		string input;
 
-		if (start == input.length())
+		while (lineStream >> input)
 		{
-			isNumber = false;
-		}
-		for (int i = start; i < input.length(); i++)
-		{
-			if (!isdigit(input[i]))
+			if (input == "end")
 			{
-				isNumber = false;
+				finished = true;
+
+				string ignored, rest;
+				while (lineStream >> rest)
+				{
+					ignored += rest + " ";
+				}
+				if (!ignored.empty())
+				{
+					cout << "Внимание: значения после end не добавлены: " << ignored << endl;
+				}
 				break;
 			}
-		}
 
-		if (isNumber)
-		{
-			newSet.insert(stoi(input));
-		}
-		else
-		{
-			newSet.insert(input);
+			bool isNumber = true;
+			int start = 0;
+			if (input[0] == '-')
+			{
+				start = 1;
+			}
+
+			if (start == input.length())
+			{
+				isNumber = false;
+			}
+			for (int i = start; i < input.length(); i++)
+			{
+				// unsigned char обязателен: русские буквы дают отрицательный char,
+				// и isdigit на нём в Debug-сборке MSVC падает с ошибкой
+				if (!isdigit(static_cast<unsigned char>(input[i])))
+				{
+					isNumber = false;
+					break;
+				}
+			}
+
+			variant<int, string> element;
+			if (isNumber)
+			{
+				try
+				{
+					element = stoi(input);
+				}
+				catch (const out_of_range&)
+				{
+					// Число не помещается в int - сохраняем как текст, чтобы не потерять
+					cout << "Внимание: число " << input
+						<< " слишком большое, оно сохранено как текст." << endl;
+					element = input;
+				}
+			}
+			else
+			{
+				element = input;
+			}
+
+			if (!newSet.insert(element).second)
+			{
+				cout << "Внимание: элемент " << input
+					<< " уже есть в множестве (повтор не добавляется";
+				if (holds_alternative<int>(element) && to_string(get<int>(element)) != input)
+				{
+					cout << ", " << input << " = " << get<int>(element);
+				}
+				cout << ")." << endl;
+			}
 		}
 	}
 
 	sets[count] = newSet;
 
-	cout << "Множество сохранено под номером " << count << endl;
+	cout << "Множество сохранено под номером " << count << ": { ";
+	for (const auto& element : newSet)
+	{
+		if (holds_alternative<int>(element))
+		{
+			cout << get<int>(element) << " ";
+		}
+		else
+		{
+			cout << get<string>(element) << " ";
+		}
+	}
+	cout << "}" << endl;
 
 	count++;
 }
@@ -381,11 +472,11 @@ set<variant<int, string>> calculateExpression(
 
 	for (int i = 0; i < expression.length(); i++)
 	{
-		if (isdigit(expression[i]))
+		if (isdigit(static_cast<unsigned char>(expression[i])))
 		{
 			int number = 0;
 
-			while (i < expression.length() && isdigit(expression[i]))
+			while (i < expression.length() && isdigit(static_cast<unsigned char>(expression[i])))
 			{
 				number = number * 10 + (expression[i] - '0');
 				i++;
@@ -506,7 +597,7 @@ bool checkCorrectOfTheExpressionByOperations(
 	{
 		char symbol = expression[i];
 
-		if (isdigit(symbol))
+		if (isdigit(static_cast<unsigned char>(symbol)))
 		{
 			if (!expectOperand)
 			{
@@ -516,18 +607,23 @@ bool checkCorrectOfTheExpressionByOperations(
 			expectOperand = false;
 
 			int number = 0;
+			int start = i;
 
-			while (i < expression.length() && isdigit(expression[i]))
+			while (i < expression.length() && isdigit(static_cast<unsigned char>(expression[i])))
 			{
-				number = number * 10 + (expression[i] - '0');
+				// защита от переполнения int на очень длинных номерах
+				if (number < 100000000)
+				{
+					number = number * 10 + (expression[i] - '0');
+				}
 				i++;
 			}
 
 			i--;
 
-			if (sets.find(number) == sets.end())
+			if (i - start + 1 > 8 || sets.find(number) == sets.end())
 			{
-				cout << "Множества с номером " << number
+				cout << "Множества с номером " << expression.substr(start, i - start + 1)
 					<< " не существует!\n";
 
 				return false;
